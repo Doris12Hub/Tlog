@@ -1,0 +1,128 @@
+USE [DBA_Database]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_Restore_TLogs]    Script Date: 12/9/2024 1:22:30 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER OFF
+GO
+
+CREATE PROCEDURE [dbo].[lsp_Restore_TLogs]
+AS
+
+DECLARE @cmd1            VARCHAR(1000)
+DECLARE @cmd2            VARCHAR(1000)
+DECLARE @dbfilename      VARCHAR(1000)
+DECLARE @databasename    VARCHAR(1000)
+DECLARE @datafilename    VARCHAR(1000)
+DECLARE @logfilename     VARCHAR(1000)
+DECLARE @datafileloc     VARCHAR(1000)
+DECLARE @logfileloc      VARCHAR(1000)
+DECLARE @filepath        VARCHAR(1000)
+DECLARE @restorefile     VARCHAR(1000)  
+DECLARE @restorecmd      VARCHAR(max)
+DECLARE @archivecmd      VARCHAR(8000)
+
+CREATE TABLE #databaseTLOGlocationinfo
+             (databaseid   INT,
+              databasename VARCHAR(1000),
+              datafilename VARCHAR(1000),
+              logfilename  VARCHAR(1000),
+              datafileloc  VARCHAR(1000),
+              logfileloc   VARCHAR(1000));
+
+CREATE TABLE #databaseTLOGlocationinfo2
+             (databaseinfo VARCHAR(1000));
+			 
+
+SET @filepath = 'F:\Backups\PHLSQL16\"APMS_PROD CopiedLogBackupFiles"\'
+--select @filepath
+
+SET @cmd1 = 'master..xp_cmdshell "dir F:\Backups\PHLSQL16\"'+'"APMS_PROD CopiedLogBackupFiles"'+'"\*.trn /b"'
+--select @cmd1
+--exec (@cmd1)
+
+INSERT INTO #databaseTLOGlocationinfo2
+--SELECT * FROM #databaseTLOGlocationinfo2
+  EXEC (@cmd1)
+
+  
+INSERT INTO #databaseTLOGlocationinfo
+SELECT [dbid], [name], NULL, NULL, NULL, NULL 
+  FROM MASTER..SYSDATABASES WITH (NOLOCK) 
+  WHERE [DBID] > 4  
+  AND [name] = 'APMS_PROD' 
+  ORDER BY [name]
+
+UPDATE #databaseTLOGlocationinfo
+ SET datafilename = b.[name], datafileloc = b.[filename]
+FROM #databaseTLOGlocationinfo a
+JOIN MASTER..SYSALTFILES b WITH (NOLOCK) ON a.databaseid = b.[dbid] 
+WHERE b.fileid = 1
+--select * from #databaseTLOGlocationinfo
+
+UPDATE #databaseTLOGlocationinfo
+SET logfilename = b.[name], logfileloc = b.[filename]
+FROM #databaseTLOGlocationinfo a
+JOIN MASTER..SYSALTFILES b WITH (NOLOCK) on a.databaseid = b.[dbid] 
+WHERE b.fileid = 2
+--select * from #databaseTLOGlocationinfo
+
+IF EXISTS (SELECT COUNT(0) FROM #databaseTLOGlocationinfo2 WHERE NULLIF(databaseinfo,'File Not Found') is not null)
+ BEGIN
+	DECLARE restore_tlog_cursor CURSOR FAST_FORWARD LOCAL FOR
+	SELECT databaseinfo 
+	  FROM #databaseTLOGlocationinfo2 
+	 WHERE NULLIF(databaseinfo,'File Not Found') is not null ORDER BY databaseinfo
+
+	  OPEN restore_tlog_cursor
+	   FETCH NEXT FROM restore_tlog_cursor INTO @restorefile
+
+		 WHILE ( @@FETCH_STATUS <> -1 )
+		  BEGIN
+  		   IF ( @@FETCH_STATUS <> -2 )
+			BEGIN	
+
+   			    SET @dbfilename = @restorefile
+
+					DECLARE restore_cursor CURSOR FAST_FORWARD LOCAL FOR 
+					SELECT databasename, datafilename,logfilename,datafileloc, logfileloc FROM #databaseTLOGlocationinfo WITH (NOLOCK)
+
+					  OPEN restore_cursor
+					  FETCH NEXT FROM restore_cursor INTO @databasename, @datafilename,@logfilename,@datafileloc, @logfileloc
+
+						  WHILE ( @@FETCH_STATUS <> -1 )
+						   BEGIN
+  							IF ( @@FETCH_STATUS <> -2 )
+						  
+							  BEGIN	
+					           --select @databasename, @datafilename,@logfilename,@datafileloc, @logfileloc;
+							   SELECT  @restorecmd = 'RESTORE LOG ['+@databasename+'] FROM DISK = N'+"'"+REPLACE(@filepath,'"','')+@dbfilename+"'"+' WITH FILE = 1,'+'STATS = 10,'+' NORECOVERY ,'+' REPLACE,'+' MOVE N'+"'"+RTRIM(LTRIM(@logfilename))+"'"+" TO N'"+RTRIM(LTRIM(@logfileloc))+"', MOVE N"+"'"+RTRIM(LTRIM(@datafilename))+"' TO N'"+RTRIM(LTRIM(@datafileloc))+"'"  
+							   EXEC (@restorecmd)
+							
+							   BEGIN
+								 SET @archivecmd =  "exec master..xp_cmdshell 'move "+@filepath+@dbfilename+" "+@filepath+'archive\'+@dbfilename+"'"
+								 EXEC (@archivecmd)
+								END
+
+					  END
+  					FETCH NEXT FROM restore_cursor into @databasename, @datafilename, @logfilename, @datafileloc, @logfileloc
+				  END
+				  CLOSE restore_cursor
+				  DEALLOCATE restore_cursor
+
+ 		     END
+  			FETCH NEXT FROM restore_tlog_cursor INTO @restorefile
+		  END
+		  CLOSE restore_tlog_cursor
+		  DEALLOCATE restore_tlog_cursor
+		  
+		 DROP TABLE #databaseTLOGlocationinfo2
+		 DROP TABLE #databaseTLOGlocationinfo
+
+	 END
+--RETURN(0)
+GO
+
+
